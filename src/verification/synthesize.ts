@@ -3,6 +3,8 @@
  * Source of truth: ASURIQ × PLEXUS Blueprint §3
  *
  * Synthesizes evidence into per-claim verdicts and overall score.
+ * Claim assessments run in PARALLEL (bounded concurrency) — not
+ * the previous sequential for...of loop.
  *
  * INVARIANT: Requires GatheredEvidence — cannot synthesize without evidence.
  * INVARIANT: Cross-source agreement increases confidence.
@@ -17,6 +19,7 @@ import type {
   SourceCitation,
   ClaimEvidence,
 } from './types.js';
+import { withConcurrency } from './types.js';
 
 // ─── LLM-Based Evidence Assessment ──────────────────────────────
 
@@ -69,6 +72,7 @@ async function assessClaimEvidence(
     throw new Error('ANTHROPIC_API_KEY not set');
   }
 
+  // Synthesis keeps Sonnet — reasoning quality matters here
   const model = process.env.CONSENSUS_SYNTHESIS_MODEL ?? 'claude-sonnet-4-6';
 
   // Build evidence summary for the LLM
@@ -85,11 +89,7 @@ async function assessClaimEvidence(
     })
     .join('\n\n');
 
-  const userPrompt = `Claim to verify: "${claimText}"
-
-Evidence from ${evidence.sources.length} sources:
-
-${evidenceSummary}`;
+  const userPrompt = `Claim to verify: "${claimText}"\n\nEvidence from ${evidence.sources.length} sources:\n\n${evidenceSummary}`;
 
   const response = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -183,6 +183,7 @@ function buildCitations(
 
 /**
  * Synthesize evidence into per-claim verdicts and overall score.
+ * Claim assessments run in PARALLEL with bounded concurrency.
  *
  * INVARIANT: Requires GatheredEvidence — the branded type enforces this.
  * INVARIANT: 'unverifiable' is NOT 'false' — it means no evidence found.
@@ -190,37 +191,40 @@ function buildCitations(
 export async function synthesizeEvidence(
   evidence: GatheredEvidence,
 ): Promise<SynthesizedVerdict> {
-  const verdicts: ClaimVerdict[] = [];
+  // Build assessment tasks — opinions get instant pass-through,
+  // verifiable claims get parallel LLM assessment
+  const tasks = evidence.claims.map(
+    (claimEvidence) => async (): Promise<ClaimVerdict> => {
+      // Opinion claims get a pass-through verdict (no LLM call)
+      if (claimEvidence.claim.verifiability === 'opinion') {
+        return {
+          claim: claimEvidence.claim,
+          confidence: 0,
+          verdict: 'unverifiable',
+          summary: 'Opinion or subjective statement — not subject to factual verification.',
+          supportingSources: [],
+          contradictingSources: [],
+        };
+      }
 
-  // Process each claim's evidence
-  for (const claimEvidence of evidence.claims) {
-    // Opinion claims get a pass-through verdict
-    if (claimEvidence.claim.verifiability === 'opinion') {
-      verdicts.push({
+      const assessment = await assessClaimEvidence(
+        claimEvidence.claim.text,
+        claimEvidence,
+      );
+
+      return {
         claim: claimEvidence.claim,
-        confidence: 0,
-        verdict: 'unverifiable',
-        summary: 'Opinion or subjective statement — not subject to factual verification.',
-        supportingSources: [],
-        contradictingSources: [],
-      });
-      continue;
-    }
+        confidence: assessment.confidence,
+        verdict: assessment.verdict,
+        summary: assessment.summary,
+        supportingSources: buildCitations(claimEvidence, assessment.supportingExcerpts),
+        contradictingSources: buildCitations(claimEvidence, assessment.contradictingExcerpts),
+      };
+    },
+  );
 
-    const assessment = await assessClaimEvidence(
-      claimEvidence.claim.text,
-      claimEvidence,
-    );
-
-    verdicts.push({
-      claim: claimEvidence.claim,
-      confidence: assessment.confidence,
-      verdict: assessment.verdict,
-      summary: assessment.summary,
-      supportingSources: buildCitations(claimEvidence, assessment.supportingExcerpts),
-      contradictingSources: buildCitations(claimEvidence, assessment.contradictingExcerpts),
-    });
-  }
+  // Parallel with bounded concurrency (5 concurrent LLM calls max)
+  const verdicts = await withConcurrency(tasks, 5);
 
   // Calculate overall confidence (weighted by verifiability)
   const verifiableClaims = verdicts.filter(
@@ -236,7 +240,7 @@ export async function synthesizeEvidence(
   const contradictedCount = verifiableClaims.filter(v => v.verdict === 'contradicted').length;
   const total = verifiableClaims.length;
 
-  let overallVerdict: SynthesizedVerdict extends { overallVerdict: infer V } ? V : never;
+  let overallVerdict: 'verified' | 'mixed' | 'contradicted' | 'insufficient_evidence';
   if (total === 0) {
     overallVerdict = 'insufficient_evidence';
   } else if (contradictedCount > 0 && verifiedCount > 0) {
