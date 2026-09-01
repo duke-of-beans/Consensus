@@ -5,7 +5,7 @@
  * Branded types enforce pipeline stage ordering at compile time.
  * You cannot skip stages — the type system prevents it.
  *
- *   extractClaims → classifyClaims → gatherEvidence → synthesizeEvidence
+ *   extractAndClassify → gatherEvidence → synthesizeEvidence
  */
 
 // ─── Branding Infrastructure ─────────────────────────────────────
@@ -83,6 +83,8 @@ export interface ClassifiedClaim extends RawClaim {
   timeSensitive: boolean;
   /** Estimated verifiability: high / medium / low / opinion */
   verifiability: 'high' | 'medium' | 'low' | 'opinion';
+  /** Bare canonical entity name for structured source lookups (Wikidata, DBpedia) */
+  searchEntity?: string;
 }
 
 export type ClassifiedClaims = Branded<{
@@ -204,7 +206,44 @@ export interface VerifyResponse {
     claimsVerified: number;
     claimsOpinion: number;
     totalLatencyMs: number;
+    /** Per-stage timing for latency debugging */
+    extractClassifyMs: number;
+    gatherMs: number;
+    synthesizeMs: number;
+    /** Model used for extraction + classification */
+    extractModel: string;
     totalCost: number;
     timestamp: string;
   };
+}
+
+// ─── Concurrency Helper ──────────────────────────────────────────
+
+/**
+ * Run async tasks with bounded concurrency.
+ * Like Promise.all but limits how many run simultaneously.
+ * Shared across gather and synthesize stages.
+ */
+export async function withConcurrency<T>(
+  tasks: Array<() => Promise<T>>,
+  limit: number,
+): Promise<T[]> {
+  const results: T[] = [];
+  const executing = new Set<Promise<void>>();
+
+  for (const task of tasks) {
+    const p = (async () => {
+      results.push(await task());
+    })();
+    executing.add(p);
+    const cleanup = () => { executing.delete(p); };
+    p.then(cleanup, cleanup);
+
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+
+  await Promise.all(executing);
+  return results;
 }
