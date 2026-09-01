@@ -18,38 +18,8 @@ import type {
   VerificationTier,
   AdapterDomain,
 } from './types.js';
-import { TIER_CONFIG } from './types.js';
+import { TIER_CONFIG, withConcurrency } from './types.js';
 import type { PlexusClient } from './plexus-client.js';
-
-// ─── Concurrency Limiter ─────────────────────────────────────────
-
-/**
- * Run async tasks with bounded concurrency.
- * Like Promise.all but limits how many run simultaneously.
- */
-async function withConcurrency<T>(
-  tasks: Array<() => Promise<T>>,
-  limit: number,
-): Promise<T[]> {
-  const results: T[] = [];
-  const executing = new Set<Promise<void>>();
-
-  for (const task of tasks) {
-    const p = (async () => {
-      results.push(await task());
-    })();
-    executing.add(p);
-    const cleanup = () => { executing.delete(p); };
-    p.then(cleanup, cleanup);
-
-    if (executing.size >= limit) {
-      await Promise.race(executing);
-    }
-  }
-
-  await Promise.all(executing);
-  return results;
-}
 
 // ─── Evidence Gathering ──────────────────────────────────────────
 
