@@ -1,3 +1,5 @@
+> ⚠️ **This repository is a portfolio showcase companion. Production code and deployments use `Consensus-private`.** Source files in this repo may be stale or divergent. Do not push code here.
+
 # Consensus
 
 A multi-model AI orchestration engine: compose any combination of LLMs into configurable reasoning topologies — tribunals, councils, fractal assemblies — with role assignment, veto authority, confidence scoring, dissent capture, hallucination detection, and per-model benchmarking.
