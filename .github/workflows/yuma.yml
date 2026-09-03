@@ -1,0 +1,19 @@
+name: YUMA Gate
+on: [push, pull_request]
+
+jobs:
+  yuma:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Clone YUMA
+        run: |
+          git clone --depth 1 \
+            https://x-access-token:${{ secrets.YUMA_PAT }}@github.com/duke-of-beans/yuma.git \
+            /tmp/yuma
+      - name: Run YUMA gate
+        run: node /tmp/yuma/dist/index.js --root ${{ github.workspace }}
